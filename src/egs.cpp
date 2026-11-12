@@ -1190,9 +1190,23 @@ bool accountOnline(qint64 accountId) {
     return false;
 }
 
-void fillCustomization(const db::Club& c, ClubCustomization* out) {
+void fillCustomization(const db::Club& c, ClubCustomization* out, const QString& bobBaseUrl) {
     const QJsonObject& j = c.customization;
     out->set_id(c.id);
+    const qint64 badge = j.value(QStringLiteral("badgeBobId")).toInteger();
+    const qint64 smallBadge = j.value(QStringLiteral("smallBadgeBobId")).toInteger();
+    if (badge > 0) {
+        out->set_badgebobid(badge);
+        if (!bobBaseUrl.isEmpty()) {
+            out->set_badgeboburl((bobBaseUrl + QStringLiteral("/ghosts/%1").arg(badge)).toStdString());
+        }
+    }
+    if (smallBadge > 0) {
+        out->set_smallbadgebobid(smallBadge);
+        if (!bobBaseUrl.isEmpty()) {
+            out->set_smallbadgeboburl((bobBaseUrl + QStringLiteral("/ghosts/%1").arg(smallBadge)).toStdString());
+        }
+    }
     if (j.contains(QStringLiteral("liveryDescriptor"))) {
         out->set_liverydescriptor(j.value(QStringLiteral("liveryDescriptor")).toString().toStdString());
     }
@@ -1210,7 +1224,7 @@ void fillCustomization(const db::Club& c, ClubCustomization* out) {
     }
 }
 
-void fillClub(const db::Club& c, ::Club* out) {
+void fillClub(const db::Club& c, ::Club* out, const QString& bobBaseUrl) {
     const QList<db::ClubMember> members = db::clubMembers(c.id);
     out->set_id(c.id);
     out->set_name(c.name.toStdString());
@@ -1227,7 +1241,7 @@ void fillClub(const db::Club& c, ::Club* out) {
         cm->set_createdon(rfc3339(m.joined).toStdString());
         cm->set_mvp(false);
     }
-    fillCustomization(c, out->mutable_customization());
+    fillCustomization(c, out->mutable_customization(), bobBaseUrl);
     out->mutable_progression()->set_xp(clubFame(c.id));
 }
 
@@ -1289,7 +1303,7 @@ void sanitizeClubName(Context&, const ClubNameMessage& req, ClubNameMessage& res
     resp.set_name(qs(req.name()).simplified().left(32).toStdString());
 }
 
-void queryClubs(Context&, const QueryClubsRequest& req, QueryClubsResponse& resp) {
+void queryClubs(Context& ctx, const QueryClubsRequest& req, QueryClubsResponse& resp) {
     QList<qint64> ids;
     for (const qint64 id : req.clubids()) {
         ids << id;
@@ -1315,7 +1329,7 @@ void queryClubs(Context&, const QueryClubsRequest& req, QueryClubsResponse& resp
         if (added >= limit || (!browse && !ids.contains(c.id))) {
             continue;
         }
-        fillClub(c, resp.add_clubs());
+        fillClub(c, resp.add_clubs(), req.lookupremoteurl() ? otgBaseUrl(ctx.request) : QString{});
         ++added;
     }
     qCInfo(lcEgs).noquote() << "clubs query" << qs(req.ShortDebugString()) << "->" << added;
@@ -1426,6 +1440,12 @@ void updateClubCustomization(Context& ctx, const UpdateCustomizationRequest& req
     }
     const ClubCustomization& in = req.customization();
     QJsonObject& j = c->customization;
+    if (in.has_badgebobid()) {
+        j.insert(QStringLiteral("badgeBobId"), in.badgebobid());
+    }
+    if (in.has_smallbadgebobid()) {
+        j.insert(QStringLiteral("smallBadgeBobId"), in.smallbadgebobid());
+    }
     if (in.has_liverydescriptor()) {
         j.insert(QStringLiteral("liveryDescriptor"), qs(in.liverydescriptor()));
     }
@@ -1449,8 +1469,12 @@ void updateClubCustomization(Context& ctx, const UpdateCustomizationRequest& req
         }
         j.insert(QStringLiteral("tags"), tags);
     }
-    db::putClub(*c);
-    fillCustomization(*c, resp.add_customizations());
+    if (!db::putClub(*c)) {
+        ctx.status = 500;
+        return;
+    }
+    fillCustomization(*c, resp.add_customizations(),
+                      req.lookupremoteurl() ? otgBaseUrl(ctx.request) : QString{});
 }
 
 // sessionService.queryStatus: the asked accounts that have a session in use are online.
